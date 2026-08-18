@@ -21,7 +21,16 @@ nsis:
   perMachine: true
   allowToChangeInstallationDirectory: true
 mac:
-  entitlementsInherit: build/entitlements.mac.plist
+  identity: null
+  icon: build/icon.png
+  target:
+    - dmg
+    - zip
+  artifactName: ${name}-${version}-${ext}
+  extendInfo:
+    NSHighResolutionCapable: true
+  hardenedRuntime: false
+  gatekeeperAssess: false
 linux:
   target:
     - AppImage
