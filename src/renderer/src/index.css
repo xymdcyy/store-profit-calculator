@@ -1,0 +1,104 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #0e1115;
+  --card: #ffffff;
+  --popover: #f9f9fa;
+  --muted: #eff1f4;
+  --muted-foreground: #7f8d9f;
+
+  --primary: #E4002B;
+  --primary-foreground: #ffffff;
+  --secondary: #FDE8EC;
+  --secondary-foreground: #333942;
+  --accent: #FDE8EC;
+  --accent-foreground: #8B0019;
+  --destructive: #ef4444;
+
+  --border: #ebebeb;
+  --border-light: #f5f5f5;
+  --input: #e2e3e4;
+  --ring: #E4002B;
+
+  --chart-1: #E4002B;
+  --chart-2: #ea4335;
+  --chart-3: #fbbc05;
+  --chart-4: #34a853;
+  --chart-5: #B91C3C;
+
+  --sidebar: #FFF5F6;
+  --sidebar-foreground: #0e1115;
+  --sidebar-primary: #E4002B;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #FDE8EC;
+  --sidebar-accent-foreground: #8B0019;
+  --sidebar-border: #F5D0D6;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Consolas', 'Microsoft YaHei', monospace;
+
+  --radius: 0.5rem;
+  --spacing: 0.24rem;
+
+  --positive: #34a853;
+  --negative: #ea4335;
+  --warning: #fbbc05;
+  --warning-soft: #fef3c7;
+  --danger-soft: #fee2e2;
+  --success-soft: #d1fae5;
+
+  /* 兼容旧组件变量名（门店简洁版 → TCL 设计规范映射） */
+  --accent: var(--primary);
+  --accent-soft: var(--secondary);
+  --accent-hover: #C50024;
+  --text-primary: var(--foreground);
+  --text-secondary: #333942;
+  --text-muted: var(--muted-foreground);
+  --bg: var(--muted);
+  --surface: var(--card);
+  --radius-lg: calc(var(--radius) + 4px);
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--background);
+  color: var(--foreground);
+  -webkit-font-smoothing: antialiased;
+}
+
+.surface {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+.surface-elevated {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 4px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.btn-press:active {
+  transform: translateY(1px);
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+  -webkit-appearance: none;
+  appearance: textfield;
+}

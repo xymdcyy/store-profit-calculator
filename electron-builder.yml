@@ -1,0 +1,29 @@
+appId: com.tcl.store-profit-calculator
+productName: TCL门店盈利测算
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.*'
+  - '!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+win:
+  icon: build/icon.ico
+  executableName: TCL门店盈利测算
+  signAndEditExecutable: false
+nsis:
+  artifactName: ${name}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+  oneClick: false
+  perMachine: true
+  allowToChangeInstallationDirectory: true
+mac:
+  entitlementsInherit: build/entitlements.mac.plist
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Utility
