@@ -144,12 +144,15 @@ DIAGNOSE_PROMPT = (
     '诚实说明「需要用户补充数据后由系统重新测算」，而不是自己编数字。\n\n'
     f'已算好的结果（系统将直接展示给用户，你据此发言，禁止质疑或重算）：\n{{{{#{NID_CALC}.facts_text#}}}}\n\n'
     f'建议线索：\n{{{{#{NID_CALC}.guidance_text#}}}}\n\n'
-    f'（图表已由系统生成，你无需处理图表。）'
+    f'（图表由系统负责处理与展示，你无需输出任何图表。）'
 )
 
 # ───────────────────────── code 节点 main 包装 ─────────────────────────
 
-MAIN_WRAPPER = r'''
+def make_main_wrapper(with_chart):
+    """生成 code 节点 main 包装。with_chart=True 时 route 输出内联 SVG 图表。"""
+    flag = 'True' if with_chart else 'False'
+    return r'''
 
 # ---- code 节点入口 ----
 # 有 doc_text（文档提取器输出的 markdown 表格）时，用 parse_markdown_table 精确解析覆盖数据，
@@ -171,15 +174,15 @@ def main(input=None, doc_text=''):
             if data.get('target_profit') is not None:
                 parsed['target_profit'] = data['target_profit']
             data = parsed
-    return route(data if data else {'intent': 'calc'})
-'''
+    return route(data if data else {'intent': 'calc'}, with_chart=%s)
+''' % flag
 
 
-def read_engine_code():
-    """读取计算引擎源码（引擎顶部已 import json，无需额外注入）"""
+def read_engine_code(with_chart=True):
+    """读取计算引擎源码（引擎顶部已 import json，无需额外注入）+ main 包装"""
     with open(os.path.join(HERE, 'calc_engine.py'), 'r', encoding='utf-8') as f:
         src = f.read()
-    return src + MAIN_WRAPPER
+    return src + make_main_wrapper(with_chart)
 
 
 # ───────────────────────── 节点构造 ─────────────────────────
@@ -342,11 +345,20 @@ def make_diagnose_node():
     return _frame(NID_DIAGNOSE, data, {'x': 980, 'y': 282}, height=88)
 
 
-def make_answer_node():
-    """answer 直接拼接：facts_text（引擎数字）+ LLM叙事 + chart_svg（引擎生成的内嵌 SVG 图表）"""
-    answer = ('{{#%s.facts_text#}}\n\n' % NID_CALC
-              + '{{#%s.text#}}\n\n' % NID_DIAGNOSE
-              + '{{#%s.chart_svg#}}' % NID_CALC)
+def make_answer_node(with_chart=False):
+    """answer 拼接。
+
+    with_chart=False（表格化兜底）：facts_text（引擎数字/表格）→ LLM 叙事，不渲染图片。
+    with_chart=True（SVG 版）：facts_text → 内联 SVG 图表 → LLM 叙事；图表放 LLM 叙事之前，
+    防诊断 LLM 输出未闭合代码块吞掉后面的内容。
+    """
+    if with_chart:
+        answer = ('{{#%s.facts_text#}}\n\n' % NID_CALC
+                  + '{{#%s.chart_svg#}}\n\n' % NID_CALC
+                  + '{{#%s.text#}}' % NID_DIAGNOSE)
+    else:
+        answer = ('{{#%s.facts_text#}}\n\n' % NID_CALC
+                  + '{{#%s.text#}}' % NID_DIAGNOSE)
     data = {
         'answer': answer,
         'selected': False,
@@ -419,10 +431,9 @@ def _build_app(name, edges, nodes, description):
     }
 
 
-def build_dsl():
-    """单一零依赖版本：图表由 code 节点内嵌生成 SVG（无需 agent 插件、无需 mcp-server-chart）。
-    支持上传 xlsx/csv 文件（if-else + 文档提取器转为 markdown 后喂给抽取节点）。"""
-    code = read_engine_code()
+def build_dsl(with_chart=False, name='TCL门店盈利测算智能体', desc=None):
+    """构建 DSL。with_chart=False 表格化兜底；True 时 code 节点输出内联 SVG、answer 带图表。"""
+    code = read_engine_code(with_chart)
     nodes = [
         make_start_node(),
         make_ifelse_node(),
@@ -430,7 +441,7 @@ def build_dsl():
         make_extract_node(),
         make_calc_node(code),
         make_diagnose_node(),
-        make_answer_node(),
+        make_answer_node(with_chart),
     ]
     edges = [
         _edge(NID_START, NID_IFELSE, 'start', 'if-else'),
@@ -442,20 +453,38 @@ def build_dsl():
         _edge(NID_CALC, NID_DIAGNOSE, 'code', 'llm'),
         _edge(NID_DIAGNOSE, NID_ANSWER, 'llm', 'answer'),
     ]
-    desc = 'TCL门店盈利测算：输入品类销售结构（X/C/P/S四级）与费用，实时测算门店利润、盈亏平衡点、边际贡献，' \
-           '并给出经营诊断、SVG 图表（阶梯瀑布 + 量本利）与改进建议。支持上传 Excel/CSV 文件（自动转表格读取）。'
-    return _build_app('TCL门店盈利测算智能体', edges, nodes, desc)
+    if desc is None:
+        desc = 'TCL门店盈利测算：输入品类销售结构（X/C/P/S四级）与费用，实时测算门店利润、盈亏平衡点、边际贡献，' \
+               '并给出经营诊断与改进建议。支持上传 Excel/CSV 文件（自动转表格读取）。'
+    return _build_app(name, edges, nodes, desc)
+
+
+OUT_FILE_SVG = os.path.join(OUT_DIR, 'TCL门店盈利测算智能体-SVG版.yml')
+
+
+def _write_dsl(path, dsl, tag):
+    with open(path, 'w', encoding='utf-8') as f:
+        yaml.dump(dsl, f, allow_unicode=True, sort_keys=False, default_flow_style=False, width=4096)
+    code_node = next(n for n in dsl['workflow']['graph']['nodes'] if n['data'].get('type') == 'code')
+    print(f'✅ 已生成 {path}（{tag}）')
+    print(f'   节点数：{len(dsl["workflow"]["graph"]["nodes"])}，边数：{len(dsl["workflow"]["graph"]["edges"])}')
+    print(f'   code 节点内嵌引擎：{len(code_node["data"]["code"])} 字符')
 
 
 def main():
     os.makedirs(OUT_DIR, exist_ok=True)
-    dsl = build_dsl()
-    with open(OUT_FILE, 'w', encoding='utf-8') as f:
-        yaml.dump(dsl, f, allow_unicode=True, sort_keys=False, default_flow_style=False, width=4096)
-    print(f'✅ 已生成 {OUT_FILE}（内嵌 SVG 图表，零插件依赖）')
-    code_node = next(n for n in dsl['workflow']['graph']['nodes'] if n['data'].get('type') == 'code')
-    print(f'   节点数：{len(dsl["workflow"]["graph"]["nodes"])}，边数：{len(dsl["workflow"]["graph"]["edges"])}')
-    print(f'   code 节点内嵌引擎：{len(code_node["data"]["code"])} 字符')
+    # 1) 表格化兜底版（默认，稳定可渲染）
+    dsl_table = build_dsl(with_chart=False)
+    _write_dsl(OUT_FILE, dsl_table, '图表表格化兜底，零插件依赖')
+    # 2) SVG 版（新：IT 确认 SVG 可渲染，answer 带内联 SVG 图表）
+    dsl_svg = build_dsl(
+        with_chart=True,
+        name='TCL门店盈利测算智能体-SVG版',
+        desc='TCL门店盈利测算（SVG 图表版）：输入品类销售结构（X/C/P/S四级）与费用，实时测算门店利润、'
+             '盈亏平衡点、边际贡献，并给出经营诊断与内联 SVG 图表（阶梯瀑布 + 量本利 CVP）。'
+             '支持上传 Excel/CSV 文件（自动转表格读取）。',
+    )
+    _write_dsl(OUT_FILE_SVG, dsl_svg, '内联 SVG 图表，零插件依赖')
 
 
 if __name__ == '__main__':

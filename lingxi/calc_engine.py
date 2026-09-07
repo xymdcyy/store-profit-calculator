@@ -10,6 +10,9 @@ code 节点入口为 single_store() / multi_store()。
 
 import json
 import re
+import base64
+import struct
+import zlib
 from decimal import Decimal, ROUND_HALF_UP
 
 # ── 品类与费用项常量（与 categories.ts / costModeLabels.ts 一致）──
@@ -1070,12 +1073,16 @@ def compare_scenarios(parsed_scenarios):
 
 # ── 意图路由（纯函数，含空数据守卫；wrapper 透传调用） ──
 
-def route(data):
+def route(data, with_chart=False):
     """按 intent 路由到测算/反推/对比，返回 code 节点输出 dict。
 
     chat / followup（追问）：不重算，返回为空 facts + 引导 guidance，交给诊断 LLM 的
     对话记忆窗口基于上一轮结果作答——避免追问时 categories 为空导致崩溃。
     兼容 code 节点传入 dict 或 JSON 字符串两种形态。
+
+    with_chart=False（默认）：chart_svg 输出空串（表格化兜底，前端不渲染任何图片）。
+    with_chart=True：chart_svg 输出内联 SVG（charts_svg / compare_bar_svg），
+    供平台确认 SVG 可渲染的版本使用。
     """
     if not isinstance(data, dict):
         try:
@@ -1108,7 +1115,7 @@ def route(data):
         return {
             'facts_text': facts,
             'guidance_text': format_suggestions(base),
-            'chart_svg': charts_svg(base),
+            'chart_svg': charts_svg(base) if with_chart else '',
         }
     if intent == 'compare':
         if not parsed:
@@ -1122,7 +1129,7 @@ def route(data):
         return {
             'facts_text': facts,
             'guidance_text': guidance,
-            'chart_svg': compare_bar_svg(cmp),
+            'chart_svg': compare_bar_svg(cmp) if with_chart else '',
         }
     # calc（默认，含空数据守卫）
     if not parsed:
@@ -1136,7 +1143,7 @@ def route(data):
     return {
         'facts_text': facts,
         'guidance_text': format_suggestions(base),
-        'chart_svg': charts_svg(base),
+        'chart_svg': charts_svg(base) if with_chart else '',
     }
 
 
@@ -1196,7 +1203,7 @@ def waterfall_svg(store_result, width=640, height=320):
         return pad_t + plot_h - (v / y_max) * plot_h
 
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width * 1.2:g}" height="{height * 1.2:g}" '
         f'viewBox="0 0 {width} {height}" font-family="sans-serif">',
         f'<text x="{pad_l}" y="16" font-size="14" font-weight="bold" fill="#111">阶梯边际贡献（瀑布）</text>',
     ]
@@ -1274,7 +1281,7 @@ def cvp_svg(store_result, width=640, height=320, points=40):
         return f'<polyline points="{coords}" fill="none" stroke="{color}" stroke-width="2"/>'
 
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width * 1.2:g}" height="{height * 1.2:g}" '
         f'viewBox="0 0 {width} {height}" font-family="sans-serif">',
         f'<text x="{pad_l}" y="16" font-size="14" font-weight="bold" fill="#111">量本利分析（CVP）</text>',
         polyline('revenue', TCL_RED),
@@ -1299,15 +1306,31 @@ def cvp_svg(store_result, width=640, height=320, points=40):
     return '\n'.join(parts)
 
 
+def _wrap_svg_code(svg):
+    """用 ```svg 围栏包裹 SVG，并放大字号/线宽让图在平台预览框里更清晰。
+
+    平台 markdown 渲染器对裸 <svg> 走 HTML sanitize（剥掉 rect/path/circle/line 等图形标签，
+    只留 <text> 文字 → 现象是「只剩文字」）；而 ```svg 代码块会被前端识别为 SVG 图片专门渲染，
+    rect/path/circle 等图形标签全部生效（已用「随便输出一个 svg 图片」实测验证）。
+    """
+    # 字号/线宽整体放大（原 font-size 10~14 → 14~19，stroke-width 1~2 → 1.4~2.8），
+    # 让图在平台固定宽度的预览框里文字更清晰、线条更粗。
+    svg = re.sub(r'font-size="(\d+(?:\.\d+)?)"',
+                 lambda m: f'font-size="{(float(m.group(1)) * 1.4):g}"', svg)
+    svg = re.sub(r'stroke-width="(\d+(?:\.\d+)?)"',
+                 lambda m: f'stroke-width="{(float(m.group(1)) * 1.4):g}"', svg)
+    return '```svg\n' + svg + '\n```'
+
+
 def charts_svg(store_result):
-    """阶梯瀑布 + CVP 两个 SVG 拼接（calc / goal_seek 意图用）。"""
+    """阶梯瀑布 + CVP 两个 SVG，各包一层 ```svg 围栏（calc / goal_seek 意图用）。"""
     parts = []
     w = waterfall_svg(store_result)
     if w:
-        parts.append(w)
+        parts.append(_wrap_svg_code(w))
     c = cvp_svg(store_result)
     if c:
-        parts.append(c)
+        parts.append(_wrap_svg_code(c))
     return '\n\n'.join(parts)
 
 
@@ -1333,7 +1356,7 @@ def compare_bar_svg(cmp, width=640, height=280):
 
     zero_y = y(0)
     parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width * 1.2:g}" height="{height * 1.2:g}" '
         f'viewBox="0 0 {width} {height}" font-family="sans-serif">',
         f'<text x="{pad_l}" y="16" font-size="14" font-weight="bold" fill="#111">方案利润对比</text>',
         f'<line x1="{pad_l}" y1="{zero_y:.1f}" x2="{width - pad_r}" y2="{zero_y:.1f}" '
@@ -1356,4 +1379,302 @@ def compare_bar_svg(cmp, width=640, height=280):
     parts.append(f'<line x1="{pad_l}" y1="{pad_t}" x2="{pad_l}" y2="{pad_t + plot_h}" stroke="#999" stroke-width="1"/>')
     parts.append(f'<line x1="{pad_l}" y1="{pad_t + plot_h}" x2="{width - pad_r}" y2="{pad_t + plot_h}" stroke="#999" stroke-width="1"/>')
     parts.append('</svg>')
-    return '\n'.join(parts)
+    return _wrap_svg_code('\n'.join(parts))
+
+
+# ── PNG 光栅化（纯标准库：struct + zlib + base64，零 matplotlib/PIL 依赖） ──
+#
+# 设计：灵犀平台更新后 markdown 渲染器会 sanitize 裸 <svg> 标签，导致图表消失。
+# PNG 是图片、无脚本风险，`<img src="data:image/png;base64,...">` 是 markdown 基础元素，
+# sanitizer 必定放行。数字仍 100% 由引擎绘制，不经 LLM。
+# 图片内只用 5×7 点阵字体画数字与 ASCII（X/C/P/S 及金额），中文标题/说明放 markdown 行。
+
+def _rgb(h):
+    h = h.lstrip('#')
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+TCL_RGB_RED = _rgb('#E4002B')
+TCL_RGB_AMBER = _rgb('#f59e0b')
+TCL_RGB_GRAY = _rgb('#999999')
+TCL_RGB_BLUE = _rgb('#2563eb')
+TCL_RGB_GREEN = _rgb('#34a853')
+TCL_RGB_DARKRED = _rgb('#ea4335')
+TCL_RGB_TEXT = _rgb('#333333')
+
+# 5×7 点阵字体（数字 + 常用符号 + X/C/P/S 字母），1=亮
+_FONT_5X7 = {
+    '0': ('01110', '10001', '10011', '10101', '11001', '10001', '01110'),
+    '1': ('00100', '01100', '00100', '00100', '00100', '00100', '01110'),
+    '2': ('01110', '10001', '00001', '00010', '00100', '01000', '11111'),
+    '3': ('11111', '00010', '00100', '00010', '00001', '10001', '01110'),
+    '4': ('00010', '00110', '01010', '10010', '11111', '00010', '00010'),
+    '5': ('11111', '10000', '11110', '00001', '00001', '10001', '01110'),
+    '6': ('00110', '01000', '10000', '11110', '10001', '10001', '01110'),
+    '7': ('11111', '00001', '00010', '00100', '01000', '01000', '01000'),
+    '8': ('01110', '10001', '10001', '01110', '10001', '10001', '01110'),
+    '9': ('01110', '10001', '10001', '01111', '00001', '00010', '01100'),
+    '.': ('00000', '00000', '00000', '00000', '00000', '01100', '01100'),
+    ',': ('00000', '00000', '00000', '00000', '00110', '00100', '01000'),
+    '-': ('00000', '00000', '00000', '11111', '00000', '00000', '00000'),
+    '+': ('00000', '00100', '00100', '11111', '00100', '00100', '00000'),
+    '%': ('11001', '11010', '00010', '00100', '01000', '01011', '10011'),
+    ' ': ('00000', '00000', '00000', '00000', '00000', '00000', '00000'),
+    'X': ('10001', '10001', '01010', '00100', '01010', '10001', '10001'),
+    'C': ('01110', '10001', '10000', '10000', '10000', '10001', '01110'),
+    'P': ('11110', '10001', '10001', '11110', '10000', '10000', '10000'),
+    'S': ('01111', '10000', '10000', '01110', '00001', '00001', '11110'),
+}
+
+
+class _Canvas:
+    """RGB 帧缓冲 + 基础绘图（矩形/线段/折线/5×7 文本），编码为 PNG base64。"""
+
+    def __init__(self, w, h, bg=(255, 255, 255)):
+        self.w, self.h = w, h
+        self.buf = bytearray(w * h * 3)
+        for i in range(w * h):
+            self.buf[i * 3] = bg[0]
+            self.buf[i * 3 + 1] = bg[1]
+            self.buf[i * 3 + 2] = bg[2]
+
+    def _set(self, x, y, c):
+        if 0 <= x < self.w and 0 <= y < self.h:
+            i = (y * self.w + x) * 3
+            self.buf[i] = c[0]
+            self.buf[i + 1] = c[1]
+            self.buf[i + 2] = c[2]
+
+    def rect(self, x0, y0, w, h, c):
+        x0, y0 = int(round(x0)), int(round(y0))
+        w, h = max(int(round(w)), 1), max(int(round(h)), 1)
+        for y in range(y0, y0 + h):
+            for x in range(x0, x0 + w):
+                self._set(x, y, c)
+
+    def line(self, x0, y0, x1, y1, c, width=1):
+        x0, y0 = int(round(x0)), int(round(y0))
+        x1, y1 = int(round(x1)), int(round(y1))
+        dx, dy = abs(x1 - x0), abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        x, y = x0, y0
+        while True:
+            for i in range(width):
+                for j in range(width):
+                    self._set(x + i, y + j, c)
+            if x == x1 and y == y1:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
+
+    def polyline(self, pts, c, width=2):
+        for i in range(len(pts) - 1):
+            self.line(pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], c, width)
+
+    def text(self, s, x, y, c, scale=1, anchor='left'):
+        s = str(s)
+        x, y = int(round(x)), int(round(y))
+        total_w = len(s) * 6 * scale - scale
+        if anchor == 'middle':
+            x -= total_w // 2
+        elif anchor == 'end':
+            x -= total_w
+        cx = x
+        for ch in s:
+            g = _FONT_5X7.get(ch)
+            if g:
+                for r in range(7):
+                    row = g[r]
+                    for col in range(5):
+                        if row[col] == '1':
+                            for sx in range(scale):
+                                for sy in range(scale):
+                                    self._set(cx + col * scale + sx, y + r * scale + sy, c)
+            cx += 6 * scale
+
+    def to_png_b64(self):
+        sig = b'\x89PNG\r\n\x1a\n'
+
+        def chunk(tag, data):
+            return (struct.pack('>I', len(data)) + tag + data
+                    + struct.pack('>I', zlib.crc32(tag + data) & 0xffffffff))
+
+        ihdr = struct.pack('>IIBBBBB', self.w, self.h, 8, 2, 0, 0, 0)
+        raw = bytearray()
+        stride = self.w * 3
+        for y in range(self.h):
+            raw.append(0)  # filter: none
+            raw += self.buf[y * stride:(y + 1) * stride]
+        idat = zlib.compress(bytes(raw), 9)
+        png = sig + chunk(b'IHDR', ihdr) + chunk(b'IDAT', idat) + chunk(b'IEND', b'')
+        return base64.b64encode(png).decode('ascii')
+
+
+def _tier_label(label):
+    """瀑布图柱下标签：取 '-' 后的系列字母（'智屏-P' → 'P'），单品类直接用原标签。"""
+    s = str(label)
+    return s.split('-')[-1] if '-' in s else s
+
+
+def md_img(png_b64, alt='图表', width=640):
+    return f'<img src="data:image/png;base64,{png_b64}" alt="{alt}" width="{width}"/>'
+
+
+def waterfall_png(store_result, width=640, height=320):
+    """阶梯边际贡献瀑布图（PNG 位图）+ 净固定费用参考线。"""
+    step = store_result.get('stepChartData') or {}
+    segs = step.get('segments') or []
+    if not segs:
+        return ''
+    subsidy = store_result.get('totalSubsidy') or 0
+    net_fc = (step.get('storeFC') or 0) - subsidy
+    max_contrib = max(max((s['cumulativeContribution'] for s in segs), default=0), net_fc, 1)
+
+    pad_l, pad_r, pad_t, pad_b = 64, 16, 30, 36
+    plot_w = width - pad_l - pad_r
+    plot_h = height - pad_t - pad_b
+    n = len(segs)
+    slot = plot_w / n
+    bar_w = slot * 0.55
+    ymax = max_contrib * 1.1
+    cv = _Canvas(width, height)
+
+    def y(v):
+        v = max(v, 0)
+        return pad_t + plot_h - (v / ymax) * plot_h
+
+    if net_fc > 0:
+        ly = y(net_fc)
+        cv.line(pad_l, ly, width - pad_r, ly, TCL_RGB_AMBER, 1)
+        cv.text(f'{net_fc:,.0f}', width - pad_r, ly + 4, TCL_RGB_AMBER, 1, 'end')
+
+    prev = 0.0
+    for i, s in enumerate(segs):
+        cx = pad_l + slot * i + slot / 2
+        x0 = cx - bar_w / 2
+        contrib = s['contributionAmount']
+        color = TCL_RGB_RED if contrib >= 0 else TCL_RGB_DARKRED
+        if contrib >= 0:
+            top, bottom = y(prev + contrib), y(prev)
+        else:
+            top, bottom = y(prev), y(prev + contrib)
+        cv.rect(x0, top, bar_w, max(bottom - top, 1), color)
+        cv.text(_tier_label(s['label']), cx, height - pad_b + 4, TCL_RGB_TEXT, 1, 'middle')
+        prev = s['cumulativeContribution']
+
+    cv.line(pad_l, pad_t, pad_l, pad_t + plot_h, TCL_RGB_GRAY, 1)
+    cv.line(pad_l, pad_t + plot_h, width - pad_r, pad_t + plot_h, TCL_RGB_GRAY, 1)
+    cv.text('0', pad_l - 4, pad_t + plot_h + 2, _rgb('#666666'), 1, 'end')
+    return cv.to_png_b64()
+
+
+def cvp_png(store_result, width=640, height=320, points=40):
+    """量本利 CVP 折线图（PNG）：收入线 vs 总成本线，交点 = 引擎 breakevenSales。"""
+    r = store_result
+    sales = r['totalSales']
+    vc_rate = r['variableCostRate']
+    net_fc = r['totalFixedCost'] - (r.get('totalSubsidy') or 0)
+    if sales <= 0:
+        return ''
+    max_x = sales * 2
+    pts = []
+    for i in range(points + 1):
+        s = max_x * i / points
+        pts.append((s, s, s * vc_rate + net_fc))
+    max_y = max_x * 1.08
+
+    pad_l, pad_r, pad_t, pad_b = 64, 16, 30, 36
+    plot_w = width - pad_l - pad_r
+    plot_h = height - pad_t - pad_b
+
+    def px(x):
+        return pad_l + (x / max_x) * plot_w
+
+    def py(v):
+        return pad_t + plot_h - (v / max_y) * plot_h
+
+    cv = _Canvas(width, height)
+    cv.polyline([(px(p[0]), py(p[1])) for p in pts], TCL_RGB_RED, 2)
+    cv.polyline([(px(p[0]), py(p[2])) for p in pts], TCL_RGB_BLUE, 2)
+
+    bep = r.get('breakevenSales')
+    if bep is not None and bep > 0:
+        bep_y = bep * vc_rate + net_fc
+        bx, by = px(bep), py(bep_y)
+        cv.rect(bx - 3, by - 3, 6, 6, TCL_RGB_AMBER)
+        cv.text(f'{bep:,.0f}', bx, by - 8, TCL_RGB_AMBER, 1, 'middle')
+
+    cv.line(pad_l, pad_t, pad_l, pad_t + plot_h, TCL_RGB_GRAY, 1)
+    cv.line(pad_l, pad_t + plot_h, width - pad_r, pad_t + plot_h, TCL_RGB_GRAY, 1)
+    cv.text('0', pad_l - 4, pad_t + plot_h + 2, _rgb('#666666'), 1, 'end')
+    cv.text(f'{max_y:,.0f}', pad_l - 4, pad_t + 2, _rgb('#666666'), 1, 'end')
+    # 图例（ASCII 颜色块 + 文字）
+    cv.rect(pad_l + 8, pad_t + 6, 10, 3, TCL_RGB_RED)
+    cv.text('revenue', pad_l + 22, pad_t + 8, TCL_RGB_RED, 1)
+    cv.rect(pad_l + 8, pad_t + 16, 10, 3, TCL_RGB_BLUE)
+    cv.text('cost', pad_l + 22, pad_t + 18, TCL_RGB_BLUE, 1)
+    return cv.to_png_b64()
+
+
+def compare_bar_png(cmp, width=640, height=280):
+    """方案利润对比柱状图（PNG）。"""
+    rows = cmp.get('rows') or []
+    if not rows:
+        return ''
+    profits = [r['profit'] for r in rows]
+    vmin = min(min(profits, default=0), 0)
+    vmax = max(max(profits, default=0), 1)
+    span = (vmax - vmin) or 1
+
+    pad_l, pad_r, pad_t, pad_b = 64, 16, 30, 36
+    plot_w = width - pad_l - pad_r
+    plot_h = height - pad_t - pad_b
+    n = len(rows)
+    slot = plot_w / n
+    bar_w = slot * 0.5
+    cv = _Canvas(width, height)
+
+    def y(v):
+        return pad_t + plot_h - ((v - vmin) / span) * plot_h
+
+    zero_y = y(0)
+    cv.line(pad_l, zero_y, width - pad_r, zero_y, TCL_RGB_GRAY, 1)
+    for i, r in enumerate(rows):
+        cx = pad_l + slot * i + slot / 2
+        x0 = cx - bar_w / 2
+        p = r['profit']
+        top, bottom = y(p), zero_y
+        color = TCL_RGB_GREEN if p >= 0 else TCL_RGB_DARKRED
+        y0 = min(top, bottom)
+        h = max(abs(bottom - top), 1)
+        cv.rect(x0, y0, bar_w, h, color)
+        cv.text(f'{p:,.0f}', cx, min(top, bottom) - 4, TCL_RGB_TEXT, 1, 'middle')
+    cv.line(pad_l, pad_t, pad_l, pad_t + plot_h, TCL_RGB_GRAY, 1)
+    return cv.to_png_b64()
+
+
+def charts_md(store_result):
+    """calc / goal_seek 用：瀑布 + CVP 两张 PNG 内嵌成 markdown 块。"""
+    blocks = []
+    w = waterfall_png(store_result)
+    if w:
+        blocks.append('#### 阶梯边际贡献（瀑布）\n\n' + md_img(w, '阶梯边际贡献瀑布图'))
+    c = cvp_png(store_result)
+    if c:
+        blocks.append('#### 量本利分析（CVP）\n\n' + md_img(c, '量本利分析（CVP）图'))
+    return '\n\n'.join(blocks)
+
+
+def compare_md(cmp):
+    """compare 用：方案利润对比 PNG 内嵌成 markdown 块。"""
+    b = compare_bar_png(cmp)
+    if not b:
+        return ''
+    return '#### 方案利润对比\n\n' + md_img(b, '方案利润对比图', width=560)
